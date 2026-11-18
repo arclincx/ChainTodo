@@ -11,4 +11,6 @@ class Config {
   static const fnToggle = 'tandaiSelesai';
   static const fnJumlah = 'jumlahTugas';
   static const fnAmbil = 'ambilTugas';
+  static const String fnEdit = 'editTugas';
+  static const String fnHapus = 'hapusTugas';
 }

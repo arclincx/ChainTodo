@@ -4,6 +4,8 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'models/tugas.dart';
 import 'services/chain_service.dart';
 
+enum FilterTugas { semua, belumSelesai, selesai, milikSaya }
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
@@ -36,6 +38,22 @@ class _HalamanTugasState extends State<HalamanTugas> {
   bool _loading = true;
   bool _mengirim = false;
   String? _error;
+  FilterTugas _filter = FilterTugas.semua;
+
+  List<Tugas> get _daftarTersaring {
+    switch (_filter) {
+      case FilterTugas.belumSelesai:
+        return _daftar.where((t) => !t.selesai).toList();
+      case FilterTugas.selesai:
+        return _daftar.where((t) => t.selesai).toList();
+      case FilterTugas.milikSaya:
+        return _daftar
+            .where((t) => t.pembuat == _service.walletAddress)
+            .toList();
+      case FilterTugas.semua:
+        return _daftar;
+    }
+  }
 
   @override
   void initState() {
@@ -43,30 +61,46 @@ class _HalamanTugasState extends State<HalamanTugas> {
     _mulai();
   }
 
+  @override
+  void dispose() {
+    _service.hentikanPantauEvent();
+    super.dispose();
+  }
+
   Future<void> _mulai() async {
     try {
       await _service.init();
       await _muatUlang();
-    } catch (e) {
+      await _service.mulaiPantauEvent(
+        onEventMasuk: (jenisEvent) async {
+          if (!mounted) return;
+          await _muatUlang(senyap: true);
+          if (!mounted || _mengirim) return;
+          _snack('Event $jenisEvent terdeteksi — daftar diperbarui otomatis');
+        },
+      );
+    } catch (e, st) {
       setState(() {
-        _error = e.toString();
+        _error = '$e\n\n$st';
         _loading = false;
       });
     }
   }
 
-  Future<void> _muatUlang() async {
-    setState(() => _loading = true);
+  Future<void> _muatUlang({bool senyap = false}) async {
+    if (!senyap) setState(() => _loading = true);
     try {
       final hasil = await _service.ambilSemua();
+      if (!mounted) return;
       setState(() {
         _daftar = hasil;
         _error = null;
       });
-    } catch (e) {
-      setState(() => _error = e.toString());
+    } catch (e, st) {
+      if (!mounted) return;
+      setState(() => _error = '$e\n\n$st');
     } finally {
-      setState(() => _loading = false);
+      if (mounted && !senyap) setState(() => _loading = false);
     }
   }
 
@@ -81,7 +115,7 @@ class _HalamanTugasState extends State<HalamanTugas> {
     } catch (e) {
       _snack('Error: $e');
     } finally {
-      setState(() => _mengirim = false);
+      if (mounted) setState(() => _mengirim = false);
     }
   }
 
@@ -119,6 +153,34 @@ class _HalamanTugasState extends State<HalamanTugas> {
     }
   }
 
+  Future<void> _dialogEdit(Tugas t) async {
+    final controller = TextEditingController(text: t.isi);
+    final isiBaru = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit tugas'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Judul tugas baru...'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Simpan'),
+          ),
+        ],
+      ),
+    );
+    if (isiBaru != null && isiBaru.isNotEmpty && isiBaru != t.isi) {
+      await _jalankanTx(() => _service.edit(t.id, isiBaru), 'Mengedit tugas');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -148,38 +210,119 @@ class _HalamanTugasState extends State<HalamanTugas> {
   Widget _isi() {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(_error!, style: const TextStyle(color: Colors.red)),
-        ),
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: SelectableText(_error!, style: const TextStyle(color: Colors.red)),
       );
     }
-    if (_daftar.isEmpty) return const Center(child: Text('Belum ada tugas'));
 
-    return RefreshIndicator(
-      onRefresh: _muatUlang,
-      child: ListView.builder(
-        itemCount: _daftar.length,
-        itemBuilder: (_, i) {
-          final t = _daftar[i];
-          return CheckboxListTile(
-            value: t.selesai,
-            title: Text(
-              t.isi,
-              style: TextStyle(
-                decoration: t.selesai ? TextDecoration.lineThrough : null,
+    final items = _daftarTersaring;
+
+    return Column(
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              FilterChip(
+                label: const Text('Semua'),
+                selected: _filter == FilterTugas.semua,
+                onSelected: (_) => setState(() => _filter = FilterTugas.semua),
               ),
-            ),
-            onChanged: (_mengirim || t.selesai)
-              ? null
-              : (_) => _jalankanTx(
-                () => _service.toggle(t.id),
-                'Mengubah status',
+              const SizedBox(width: 8),
+              FilterChip(
+                label: const Text('Belum Selesai'),
+                selected: _filter == FilterTugas.belumSelesai,
+                onSelected: (_) =>
+                    setState(() => _filter = FilterTugas.belumSelesai),
               ),
-          );
-        },
-      ),
+              const SizedBox(width: 8),
+              FilterChip(
+                label: const Text('Selesai'),
+                selected: _filter == FilterTugas.selesai,
+                onSelected: (_) =>
+                    setState(() => _filter = FilterTugas.selesai),
+              ),
+              const SizedBox(width: 8),
+              FilterChip(
+                label: const Text('Milik Saya'),
+                selected: _filter == FilterTugas.milikSaya,
+                onSelected: (_) =>
+                    setState(() => _filter = FilterTugas.milikSaya),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: items.isEmpty
+              ? const Center(child: Text('Belum ada tugas'))
+              : RefreshIndicator(
+                  onRefresh: _muatUlang,
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (_, i) {
+                      final t = items[i];
+                      final punyaInfoPembuat = t.pembuat.length >= 10;
+                      final adalahPembuat =
+                          t.pembuat == _service.walletAddress;
+
+                      return ListTile(
+                        leading: Checkbox(
+                          value: t.selesai,
+                          onChanged: (_mengirim || t.selesai)
+                              ? null
+                              : (_) => _jalankanTx(
+                                    () => _service.toggle(t.id),
+                                    'Mengubah status',
+                                  ),
+                        ),
+                        title: Text(
+                          t.isi,
+                          style: TextStyle(
+                            decoration:
+                                t.selesai ? TextDecoration.lineThrough : null,
+                          ),
+                        ),
+                        subtitle: punyaInfoPembuat
+                            ? Text(
+                                'Pembuat: ${t.pembuat.substring(0, 6)}...${t.pembuat.substring(t.pembuat.length - 4)}',
+                                style: const TextStyle(fontSize: 12),
+                              )
+                            : null,
+                        trailing: adalahPembuat
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit_outlined),
+                                    tooltip: 'Edit judul',
+                                    onPressed: _mengirim
+                                        ? null
+                                        : () => _dialogEdit(t),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Colors.red,
+                                    ),
+                                    tooltip: 'Hapus tugas',
+                                    onPressed: _mengirim
+                                        ? null
+                                        : () => _jalankanTx(
+                                              () => _service.hapus(t.id),
+                                              'Menghapus tugas',
+                                            ),
+                                  ),
+                                ],
+                              )
+                            : null,
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }

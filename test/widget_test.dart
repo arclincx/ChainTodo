@@ -1,72 +1,140 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:web3dart/web3dart.dart';
 
-// Check if your chain_service.dart is in lib/ or lib/services/
-import '../lib/models/tugas.dart';
-import '../lib/services/chain_service.dart';
+import 'package:chaintodo/models/tugas.dart';
+import 'package:chaintodo/services/chain_service.dart';
 
 class FakeChainService extends ChainService {
-  final List<Tugas> _items = [
-    Tugas(id: 0, isi: 'Belajar Smart Contract', selesai: false),
-    Tugas(id: 1, isi: 'Deploy ke Sepolia', selesai: true),
+  final List<Tugas> items = [
+    Tugas(id: 0, isi: 'Belajar Solidity', selesai: true, pembuat: '0xaaa'),
+    Tugas(id: 1, isi: 'Deploy Sepolia', selesai: false, pembuat: '0xbbb'),
   ];
+
+  void Function(String jenisEvent)? _listener;
+
+  @override
+  String get walletAddress => '0xaaa';
 
   @override
   Future<void> init() async {}
 
   @override
-  Future<List<Tugas>> ambilSemua() async => List.from(_items);
+  Future<List<Tugas>> ambilSemua() async => List.of(items);
 
   @override
   Future<String> tambah(String isi) async {
-    _items.add(Tugas(id: _items.length, isi: isi, selesai: false));
-    return '0xmocktxhash_tambah';
+    items.add(
+      Tugas(
+        id: items.length,
+        isi: isi,
+        selesai: false,
+        pembuat: walletAddress,
+      ),
+    );
+    simulasiEvent('TugasBaru');
+    return '0x1111111111';
   }
 
   @override
   Future<String> toggle(int id) async {
-    final index = _items.indexWhere((t) => t.id == id);
-    if (index != -1) {
-      _items[index] = Tugas(
-        id: _items[index].id,
-        isi: _items[index].isi,
-        selesai: !_items[index].selesai,
+    final idx = items.indexWhere((t) => t.id == id);
+    if (idx != -1) {
+      final lama = items[idx];
+      items[idx] = Tugas(
+        id: lama.id,
+        isi: lama.isi,
+        selesai: true,
+        pembuat: lama.pembuat,
       );
+      simulasiEvent('TugasSelesai');
     }
-    return '0xmocktxhash_toggle';
+    return '0x2222222222';
+  }
+
+  @override
+  Future<String> edit(int id, String judulBaru) async {
+    final idx = items.indexWhere((t) => t.id == id);
+    if (idx != -1) {
+      final lama = items[idx];
+      items[idx] = Tugas(
+        id: lama.id,
+        isi: judulBaru,
+        selesai: lama.selesai,
+        pembuat: lama.pembuat,
+      );
+      simulasiEvent('TugasDiedit');
+    }
+    return '0x3333333333';
+  }
+
+  @override
+  Future<String> hapus(int id) async {
+    items.removeWhere((t) => t.id == id);
+    simulasiEvent('TugasDihapus');
+    return '0x4444444444';
   }
 
   @override
   Future<void> tunggu(String txHash) async {}
+
+  @override
+  Future<void> mulaiPantauEvent({
+    required void Function(String jenisEvent) onEventMasuk,
+    Duration interval = const Duration(seconds: 6),
+  }) async {
+    _listener = onEventMasuk;
+  }
+
+  @override
+  void hentikanPantauEvent() {
+    _listener = null;
+  }
+
+  void simulasiEvent(String namaEvent) {
+    _listener?.call(namaEvent);
+  }
 }
 
 void main() {
-  test('EthPrivateKey derives a valid EthereumAddress', () {
-    const samplePrivateKey =
-        '0x0000000000000000000000000000000000000000000000000000000000000001';
-    final credentials = EthPrivateKey.fromHex(samplePrivateKey);
-    expect(
-      credentials.address.with0x,
-      '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf',
+  test('Derivasi alamat Ethereum dari private key berjalan benar', () {
+    final key = EthPrivateKey.fromHex(
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     );
+    expect(key.address.with0x.toLowerCase(), startsWith('0x'));
+    expect(key.address.with0x.length, 42);
   });
 
-  test('FakeChainService reads, adds, and toggles Tugas items', () async {
+  test('Tambah, edit, hapus, filter milik saya, dan event listener berjalan sesuai', () async {
     final service = FakeChainService();
-    await service.init();
+    final logEvent = <String>[];
 
-    var list = await service.ambilSemua();
-    expect(list.length, 2);
-    expect(list.first.isi, 'Belajar Smart Contract');
+    await service.mulaiPantauEvent(
+      onEventMasuk: (jenis) => logEvent.add(jenis),
+    );
 
-    await service.tambah('Test Flutter Web3');
-    list = await service.ambilSemua();
-    expect(list.length, 3);
-    expect(list.last.isi, 'Test Flutter Web3');
-    expect(list.last.selesai, false);
+    // 1. Tambah tugas baru
+    await service.tambah('Uji Edit dan Hapus');
+    var semua = await service.ambilSemua();
+    expect(semua.length, 3);
+    expect(logEvent.last, 'TugasBaru');
 
-    await service.toggle(2);
-    list = await service.ambilSemua();
-    expect(list.last.selesai, true);
+    // 2. Filter milik wallet sendiri
+    final milikSaya =
+        semua.where((t) => t.pembuat == service.walletAddress).toList();
+    expect(milikSaya.length, 2);
+
+    // 3. Edit judul tugas
+    await service.edit(2, 'Judul Tugas Diperbarui');
+    semua = await service.ambilSemua();
+    expect(semua.firstWhere((t) => t.id == 2).isi, 'Judul Tugas Diperbarui');
+    expect(logEvent.last, 'TugasDiedit');
+
+    // 4. Hapus tugas
+    await service.hapus(2);
+    semua = await service.ambilSemua();
+    expect(semua.any((t) => t.id == 2), isFalse);
+    expect(logEvent.last, 'TugasDihapus');
+
+    service.hentikanPantauEvent();
   });
 }
